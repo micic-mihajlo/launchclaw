@@ -146,8 +146,10 @@ A minimal Hetzner provisioning API scaffold is included in:
 It supports:
 
 - listing Hetzner locations/server types/images
+- checking server-type availability by location/datacenter
+- exposing templated plans with live pricing hints
 - creating OpenClaw instances with injected LaunchClaw cloud-init
-- instance status and deletion
+- instance status, lifecycle actions (start/stop/restart), and deletion
 
 See `/Users/mihajlomicic/Documents/GitHub/launchclaw/api/README.md`.
 

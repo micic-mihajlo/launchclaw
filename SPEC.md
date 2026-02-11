@@ -77,7 +77,7 @@ Important options:
 
 - Multi-tenant SaaS dashboard
 - Billing/subscriptions
-- Managed provider API integration (Hetzner/Cloudflare/Firebase/etc.)
+- Full control-plane stack (Cloudflare DNS, auth, webhooks, payment-provider entitlements)
 
 ## Optional API Scaffold
 
@@ -86,6 +86,9 @@ Important options:
 - `GET /v1/catalog/locations`
 - `GET /v1/catalog/server-types`
 - `GET /v1/catalog/images`
+- `GET /v1/catalog/availability`
+- `GET /v1/catalog/plans`
 - `POST /v1/instances`
 - `GET /v1/instances/:id`
+- `POST /v1/instances/:id/actions/:action`
 - `DELETE /v1/instances/:id`

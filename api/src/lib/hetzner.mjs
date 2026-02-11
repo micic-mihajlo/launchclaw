@@ -52,12 +52,33 @@ export class HetznerClient {
     return this.request("DELETE", `/servers/${serverId}`);
   }
 
+  async postServerAction(serverId, action, payload) {
+    return this.request("POST", `/servers/${serverId}/actions/${action}`, payload);
+  }
+
+  async powerOnServer(serverId) {
+    return this.postServerAction(serverId, "poweron");
+  }
+
+  async powerOffServer(serverId) {
+    return this.postServerAction(serverId, "poweroff");
+  }
+
+  async rebootServer(serverId) {
+    return this.postServerAction(serverId, "reboot");
+  }
+
   async getAction(actionId) {
     return this.request("GET", `/actions/${actionId}`);
   }
 
   async listLocations() {
     return this.request("GET", "/locations");
+  }
+
+  async listDatacenters(query = "") {
+    const suffix = query ? `?${query}` : "";
+    return this.request("GET", `/datacenters${suffix}`);
   }
 
   async listServerTypes() {

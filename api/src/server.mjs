@@ -30,6 +30,43 @@ function requireAuth(req) {
   }
 }
 
+const INSTANCE_ACTIONS = {
+  start: "poweron",
+  stop: "poweroff",
+  restart: "reboot",
+};
+
+const PLAN_TEMPLATES = [
+  {
+    id: "starter",
+    profile: "personal",
+    serverType: "cpx11",
+    title: "Starter",
+    description: "Small single-assistant deployment for low traffic.",
+  },
+  {
+    id: "business",
+    profile: "business",
+    serverType: "cpx21",
+    title: "Business",
+    description: "Default LaunchClaw business deployment template.",
+  },
+  {
+    id: "builder",
+    profile: "developer",
+    serverType: "cpx31",
+    title: "Builder",
+    description: "Developer-focused template with headroom for automations.",
+  },
+  {
+    id: "agency",
+    profile: "agency",
+    serverType: "cpx41",
+    title: "Agency",
+    description: "Multi-client template with higher CPU and memory budget.",
+  },
+];
+
 function normalizeServerSummary(server) {
   return {
     id: server.id,
@@ -56,6 +93,38 @@ function normalizeSshKeys(input, defaults) {
       return /^[0-9]+$/.test(value) ? Number.parseInt(value, 10) : value;
     })
     .filter((v) => v != null);
+}
+
+function normalizeAction(action) {
+  return action
+    ? {
+        id: action.id,
+        command: action.command,
+        status: action.status,
+        started: action.started,
+        finished: action.finished,
+      }
+    : null;
+}
+
+function parseMonthlyGross(price) {
+  const value = Number.parseFloat(String(price ?? ""));
+  return Number.isFinite(value) ? value : null;
+}
+
+function pickMonthlyGrossPrice(serverType, locationName) {
+  const prices = Array.isArray(serverType?.prices) ? serverType.prices : [];
+  if (prices.length === 0) {
+    return null;
+  }
+
+  const wanted = String(locationName || "").trim().toLowerCase();
+  const exact = prices.find((entry) => String(entry.location || "").trim().toLowerCase() === wanted);
+  if (exact) {
+    return parseMonthlyGross(exact.price_monthly?.gross);
+  }
+
+  return parseMonthlyGross(prices[0]?.price_monthly?.gross);
 }
 
 async function handleCreateInstance(req, res) {
@@ -139,15 +208,7 @@ async function handleCreateInstance(req, res) {
 
   return json(res, 201, {
     instance: normalizeServerSummary(serverData),
-    action: action
-      ? {
-          id: action.id,
-          command: action.command,
-          status: action.status,
-          started: action.started,
-          finished: action.finished,
-        }
-      : null,
+    action: normalizeAction(action),
     metadata: {
       profile,
       model,
@@ -189,15 +250,50 @@ async function handleDeleteInstance(req, res, id, url) {
   return json(res, 200, {
     deleted: true,
     id: Number.parseInt(String(id), 10),
-    action: action
-      ? {
-          id: action.id,
-          command: action.command,
-          status: action.status,
-          started: action.started,
-          finished: action.finished,
-        }
-      : null,
+    action: normalizeAction(action),
+  });
+}
+
+async function handleInstanceAction(req, res, id, actionName, url) {
+  const mappedAction = INSTANCE_ACTIONS[actionName];
+  if (!mappedAction) {
+    return json(res, 400, {
+      error: "Unsupported action",
+      supportedActions: Object.keys(INSTANCE_ACTIONS),
+    });
+  }
+
+  const waitForAction = parseBoolean(url.searchParams.get("wait"), true);
+
+  let result;
+  if (mappedAction === "poweron") {
+    result = await getHetznerClient().powerOnServer(id);
+  } else if (mappedAction === "poweroff") {
+    result = await getHetznerClient().powerOffServer(id);
+  } else {
+    result = await getHetznerClient().rebootServer(id);
+  }
+
+  const actionId = result.action?.id;
+  let action = result.action || null;
+  if (waitForAction && actionId) {
+    action = await getHetznerClient().waitForAction(actionId);
+  }
+
+  let instance = null;
+  try {
+    const latest = await getHetznerClient().getServer(id);
+    instance = normalizeServerSummary(latest.server);
+  } catch {
+    // A follow-up GET can fail during state transitions; action status is still returned.
+  }
+
+  return json(res, 200, {
+    id: Number.parseInt(String(id), 10),
+    requestedAction: actionName,
+    providerAction: mappedAction,
+    action: normalizeAction(action),
+    instance,
   });
 }
 
@@ -258,6 +354,129 @@ async function handleCatalogImages(req, res, url) {
   });
 }
 
+async function handleCatalogAvailability(req, res, url) {
+  const serverTypeFilter = String(url.searchParams.get("serverType") || "").trim().toLowerCase();
+  const location = String(url.searchParams.get("location") || "").trim();
+  const datacenter = String(url.searchParams.get("datacenter") || "").trim();
+
+  const query = new URLSearchParams();
+  if (location) {
+    query.set("location", location);
+  }
+  if (datacenter) {
+    query.set("name", datacenter);
+  }
+
+  const [serverTypeData, datacenterData] = await Promise.all([
+    getHetznerClient().listServerTypes(),
+    getHetznerClient().listDatacenters(query.toString()),
+  ]);
+
+  const serverTypes = Array.isArray(serverTypeData.server_types) ? serverTypeData.server_types : [];
+  const datacenters = Array.isArray(datacenterData.datacenters) ? datacenterData.datacenters : [];
+  const serverTypeById = new Map(serverTypes.map((entry) => [entry.id, entry]));
+
+  const availability = [];
+  for (const center of datacenters) {
+    const supported = new Set(center.server_types?.supported || []);
+    const available = new Set(center.server_types?.available || []);
+    for (const typeId of supported) {
+      const serverType = serverTypeById.get(typeId);
+      if (!serverType) {
+        continue;
+      }
+      const typeName = String(serverType.name || "").toLowerCase();
+      if (serverTypeFilter && ![typeName, String(serverType.id)].includes(serverTypeFilter)) {
+        continue;
+      }
+      availability.push({
+        location: center.location?.name || null,
+        datacenter: center.name,
+        datacenterDescription: center.description,
+        serverTypeId: serverType.id,
+        serverType: serverType.name,
+        available: available.has(typeId),
+        monthlyGross: pickMonthlyGrossPrice(serverType, center.location?.name),
+        memoryGb: serverType.memory,
+        cores: serverType.cores,
+      });
+    }
+  }
+
+  return json(res, 200, {
+    filters: {
+      location: location || null,
+      datacenter: datacenter || null,
+      serverType: serverTypeFilter || null,
+    },
+    availability,
+  });
+}
+
+async function handleCatalogPlans(req, res, url) {
+  const location = String(url.searchParams.get("location") || config.defaults.location || "").trim();
+  const datacenter = String(url.searchParams.get("datacenter") || "").trim();
+
+  const query = new URLSearchParams();
+  if (location) {
+    query.set("location", location);
+  }
+  if (datacenter) {
+    query.set("name", datacenter);
+  }
+
+  const [serverTypeData, datacenterData] = await Promise.all([
+    getHetznerClient().listServerTypes(),
+    getHetznerClient().listDatacenters(query.toString()),
+  ]);
+
+  const serverTypes = Array.isArray(serverTypeData.server_types) ? serverTypeData.server_types : [];
+  const datacenters = Array.isArray(datacenterData.datacenters) ? datacenterData.datacenters : [];
+  const serverTypeByName = new Map(serverTypes.map((entry) => [String(entry.name || "").toLowerCase(), entry]));
+
+  const datacenterAvailability = new Map();
+  for (const center of datacenters) {
+    const available = new Set(center.server_types?.available || []);
+    datacenterAvailability.set(center.name, available);
+  }
+
+  const plans = PLAN_TEMPLATES.map((plan) => {
+    const serverType = serverTypeByName.get(plan.serverType.toLowerCase());
+    const monthlyGross = pickMonthlyGrossPrice(serverType, location);
+    const availability = datacenters.map((center) => {
+      const availableSet = datacenterAvailability.get(center.name) || new Set();
+      return {
+        location: center.location?.name || null,
+        datacenter: center.name,
+        available: Boolean(serverType && availableSet.has(serverType.id)),
+        monthlyGross: pickMonthlyGrossPrice(serverType, center.location?.name),
+      };
+    });
+
+    return {
+      id: plan.id,
+      title: plan.title,
+      description: plan.description,
+      profile: plan.profile,
+      serverType: plan.serverType,
+      memoryGb: serverType?.memory ?? null,
+      cores: serverType?.cores ?? null,
+      storageType: serverType?.storage_type ?? null,
+      monthlyGross,
+      currency: "EUR",
+      availability,
+    };
+  });
+
+  return json(res, 200, {
+    filters: {
+      location: location || null,
+      datacenter: datacenter || null,
+    },
+    plans,
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -292,6 +511,24 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/v1/catalog/images" && req.method === "GET") {
       return await handleCatalogImages(req, res, url);
+    }
+
+    if (url.pathname === "/v1/catalog/availability" && req.method === "GET") {
+      return await handleCatalogAvailability(req, res, url);
+    }
+
+    if (url.pathname === "/v1/catalog/plans" && req.method === "GET") {
+      return await handleCatalogPlans(req, res, url);
+    }
+
+    const actionMatch = url.pathname.match(/^\/v1\/instances\/(\d+)\/actions\/([a-z-]+)$/);
+    if (actionMatch) {
+      const id = actionMatch[1];
+      const action = actionMatch[2];
+      if (req.method === "POST") {
+        return await handleInstanceAction(req, res, id, action, url);
+      }
+      return methodNotAllowed(res);
     }
 
     const match = url.pathname.match(/^\/v1\/instances\/(\d+)$/);
