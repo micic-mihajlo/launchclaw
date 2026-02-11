@@ -79,3 +79,13 @@ Important options:
 - Billing/subscriptions
 - Managed provider API integration (Hetzner/Cloudflare/Firebase/etc.)
 
+## Optional API Scaffold
+
+`/Users/mihajlomicic/Documents/GitHub/launchclaw/api` now contains a minimal stateless provisioning API for Hetzner:
+
+- `GET /v1/catalog/locations`
+- `GET /v1/catalog/server-types`
+- `GET /v1/catalog/images`
+- `POST /v1/instances`
+- `GET /v1/instances/:id`
+- `DELETE /v1/instances/:id`

@@ -137,6 +137,20 @@ sudo ./setup.sh --uninstall
 - Generated config uses current OpenClaw keys (`gateway.auth.token`, `gateway.mode=local`, `agents.defaults.*`).
 - Linux daemon runs as `openclaw` via user-level systemd service with `linger` enabled.
 
+## Optional Provisioning API
+
+A minimal Hetzner provisioning API scaffold is included in:
+
+- `/Users/mihajlomicic/Documents/GitHub/launchclaw/api`
+
+It supports:
+
+- listing Hetzner locations/server types/images
+- creating OpenClaw instances with injected LaunchClaw cloud-init
+- instance status and deletion
+
+See `/Users/mihajlomicic/Documents/GitHub/launchclaw/api/README.md`.
+
 ## License
 
 MIT
