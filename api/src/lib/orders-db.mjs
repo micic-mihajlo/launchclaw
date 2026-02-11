@@ -297,6 +297,9 @@ export class OrdersStore {
     if (!existing) {
       return null;
     }
+    if (existing.status === "canceled") {
+      return existing;
+    }
 
     const statement = this.db.prepare(`
       UPDATE orders
@@ -312,7 +315,7 @@ export class OrdersStore {
         dns_record_aaaa_id = ?,
         metadata_json = ?,
         error_message = NULL
-      WHERE id = ?
+      WHERE id = ? AND status = 'provisioning'
     `);
 
     const instance = payload.instance || {};
@@ -324,7 +327,7 @@ export class OrdersStore {
         }
       : existing.metadata;
 
-    statement.run(
+    const result = statement.run(
       nowIso(),
       instance.id || null,
       instance.name || null,
@@ -336,6 +339,9 @@ export class OrdersStore {
       metadata ? JSON.stringify(metadata) : null,
       orderId
     );
+    if (result.changes === 0) {
+      return this.getOrder(orderId);
+    }
 
     this.#appendEvent(orderId, "order.provisioning.succeeded", {
       instanceId: instance.id || null,

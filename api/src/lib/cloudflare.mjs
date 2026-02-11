@@ -66,10 +66,16 @@ export class CloudflareClient {
     const first = records[0];
 
     if (first) {
-      const updated = await this.updateDnsRecord(first.id, { type, name, content, proxied, ttl });
+      const updatedRecords = [];
+      for (const record of records) {
+        const updated = await this.updateDnsRecord(record.id, { type, name, content, proxied, ttl });
+        updatedRecords.push(updated.result);
+      }
       return {
-        operation: "updated",
-        record: updated.result,
+        operation: records.length > 1 ? "updated_many" : "updated",
+        record: updatedRecords[0],
+        records: updatedRecords,
+        updatedCount: updatedRecords.length,
       };
     }
 
