@@ -1,18 +1,10 @@
 {
   "name": "agency",
-  "description": "Multi-agent orchestration for agencies (Bullpen-style)",
+  "description": "Multi-agent orchestration profile",
   "channels": ["discord", "telegram", "slack", "whatsapp", "signal"],
-  "maxConcurrentAgents": 4,
-  "maxSubAgents": 8,
   "model": "anthropic/claude-opus-4-6",
-  "heartbeatInterval": 15,
-  "heartbeatSchedule": "",
-  "compaction": "safeguard",
-  "accessPolicy": "allowlist",
-  "features": {
-    "webTools": true,
-    "githubIntegration": true,
-    "subAgents": true
-  },
-  "skills": ["coding", "research", "business"]
+  "maxConcurrent": 4,
+  "subagentsMaxConcurrent": 8,
+  "heartbeatEvery": "15m",
+  "compactionMode": "safeguard"
 }

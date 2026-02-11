@@ -33,7 +33,7 @@ setup_proxy() {
     # Generate nginx config from template
     sudo sed \
         -e "s|__SERVER_NAME__|${server_name}|g" \
-        -e "s|__GATEWAY_PORT__|3000|g" \
+        -e "s|__GATEWAY_PORT__|${GATEWAY_PORT}|g" \
         "$conf_src" | sudo tee /etc/nginx/sites-available/openclaw > /dev/null
 
     # Enable site

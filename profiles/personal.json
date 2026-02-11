@@ -1,17 +1,10 @@
 {
   "name": "personal",
-  "description": "Single user, casual setup with all channels open",
+  "description": "Single user, casual setup",
   "channels": ["discord", "telegram"],
-  "maxConcurrentAgents": 2,
-  "maxSubAgents": 0,
   "model": "anthropic/claude-sonnet-4-5",
-  "heartbeatInterval": 30,
-  "heartbeatSchedule": "",
-  "compaction": "default",
-  "accessPolicy": "open",
-  "features": {
-    "webTools": false,
-    "githubIntegration": false,
-    "subAgents": false
-  }
+  "maxConcurrent": 2,
+  "subagentsMaxConcurrent": 0,
+  "heartbeatEvery": "30m",
+  "compactionMode": "default"
 }

@@ -1,86 +1,104 @@
 #!/usr/bin/env bash
-# LaunchClaw — systemd/launchd service setup
+# LaunchClaw — Gateway daemon setup via native OpenClaw commands
 
 setup_service() {
+    if [[ "$DRY_RUN" == true ]]; then
+        if [[ "$OS_TYPE" == "linux" ]]; then
+            log "[DRY RUN] Would run: sudo -u openclaw -H openclaw gateway install --port ${GATEWAY_PORT} --token <redacted> --force"
+            log "[DRY RUN] Would enable linger for openclaw user"
+        else
+            log "[DRY RUN] Would run: openclaw gateway install --port ${GATEWAY_PORT} --token <redacted> --force"
+        fi
+        return
+    fi
+
+    if ! command -v openclaw &>/dev/null; then
+        err "openclaw binary not found in PATH"
+        exit 1
+    fi
+
+    local token
+    token=$(_resolve_gateway_token)
+    if [[ -z "$token" ]]; then
+        err "Could not resolve gateway auth token from config"
+        exit 1
+    fi
+
     if [[ "$OS_TYPE" == "linux" ]]; then
-        setup_systemd
+        if ! id openclaw &>/dev/null; then
+            err "openclaw user does not exist"
+            exit 1
+        fi
+
+        sudo -u openclaw -H openclaw gateway install \
+            --port "$GATEWAY_PORT" \
+            --token "$token" \
+            --force \
+            --json >/dev/null
+
+        if command -v loginctl &>/dev/null; then
+            sudo loginctl enable-linger openclaw >/dev/null 2>&1 || warn "Failed to enable linger for openclaw user"
+        else
+            warn "loginctl not found; user-level systemd service may stop after logout"
+        fi
+
+        ok "OpenClaw daemon installed (systemd user service)"
+
     elif [[ "$OS_TYPE" == "macos" ]]; then
-        setup_launchd
+        openclaw gateway install \
+            --port "$GATEWAY_PORT" \
+            --token "$token" \
+            --force \
+            --json >/dev/null
+
+        ok "OpenClaw daemon installed (launchd)"
     fi
 }
 
 start_service() {
     if [[ "$DRY_RUN" == true ]]; then
-        log "[DRY RUN] Would start OpenClaw service"
+        log "[DRY RUN] Would restart OpenClaw service"
         return
     fi
 
     if [[ "$OS_TYPE" == "linux" ]]; then
-        sudo systemctl start openclaw-gateway
-        ok "OpenClaw gateway started (systemd)"
+        sudo -u openclaw -H openclaw gateway restart --json >/dev/null 2>&1 || \
+            sudo -u openclaw -H openclaw gateway start --json >/dev/null 2>&1 || true
+        ok "OpenClaw gateway started/restarted"
     elif [[ "$OS_TYPE" == "macos" ]]; then
-        launchctl load ~/Library/LaunchAgents/com.openclaw.gateway.plist 2>/dev/null || true
-        launchctl start com.openclaw.gateway 2>/dev/null || true
-        ok "OpenClaw gateway started (launchd)"
+        openclaw gateway restart --json >/dev/null 2>&1 || \
+            openclaw gateway start --json >/dev/null 2>&1 || true
+        ok "OpenClaw gateway started/restarted"
     fi
 }
 
-setup_systemd() {
-    local service_src="${LAUNCHCLAW_DIR}/systemd/openclaw-gateway.service"
-    local service_dst="/etc/systemd/system/openclaw-gateway.service"
-
-    if [[ "$DRY_RUN" == true ]]; then
-        log "[DRY RUN] Would install systemd unit to ${service_dst}"
+_resolve_gateway_token() {
+    if [[ -n "${GATEWAY_TOKEN:-}" ]]; then
+        echo "$GATEWAY_TOKEN"
         return
     fi
 
-    if [[ ! -f "$service_src" ]]; then
-        err "Missing systemd unit template: ${service_src}"
-        exit 1
+    local config_file
+    if [[ "$OS_TYPE" == "linux" ]]; then
+        config_file="/home/openclaw/.openclaw/openclaw.json"
+    else
+        config_file="${HOME}/.openclaw/openclaw.json"
     fi
 
-    # Resolve node path for ExecStart
-    local node_path openclaw_path
-    node_path=$(which node)
-    openclaw_path=$(which openclaw)
-
-    # Install the unit file with resolved paths
-    sudo sed \
-        -e "s|__NODE_PATH__|${node_path}|g" \
-        -e "s|__OPENCLAW_PATH__|${openclaw_path}|g" \
-        "$service_src" | sudo tee "$service_dst" > /dev/null
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable openclaw-gateway
-    ok "Systemd service installed and enabled"
-}
-
-setup_launchd() {
-    local plist_src="${LAUNCHCLAW_DIR}/launchd/com.openclaw.gateway.plist"
-    local plist_dst="${HOME}/Library/LaunchAgents/com.openclaw.gateway.plist"
-
-    if [[ "$DRY_RUN" == true ]]; then
-        log "[DRY RUN] Would install launchd plist to ${plist_dst}"
-        return
+    if [[ -f "$config_file" ]]; then
+        awk '
+            /"gateway"[[:space:]]*:/ { in_gateway=1 }
+            in_gateway && /"auth"[[:space:]]*:/ { in_auth=1 }
+            in_gateway && in_auth && /"token"[[:space:]]*:/ {
+                if (match($0, /"token"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+                    token=substr($0, RSTART, RLENGTH)
+                    gsub(/.*:[[:space:]]*"/, "", token)
+                    gsub(/"$/, "", token)
+                    print token
+                    exit
+                }
+            }
+            in_gateway && /}[[:space:]]*,?[[:space:]]*$/ && in_auth { in_auth=0 }
+        ' "$config_file"
     fi
-
-    if [[ ! -f "$plist_src" ]]; then
-        err "Missing launchd plist template: ${plist_src}"
-        exit 1
-    fi
-
-    mkdir -p "${HOME}/Library/LaunchAgents"
-
-    # Resolve paths
-    local openclaw_path
-    openclaw_path=$(which openclaw)
-
-    # Install with resolved paths
-    sed \
-        -e "s|__OPENCLAW_PATH__|${openclaw_path}|g" \
-        -e "s|__HOME__|${HOME}|g" \
-        -e "s|__USER__|$(whoami)|g" \
-        "$plist_src" > "$plist_dst"
-
-    ok "Launchd plist installed"
 }

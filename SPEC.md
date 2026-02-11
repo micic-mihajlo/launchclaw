@@ -1,149 +1,81 @@
-# LaunchClaw — Spec
+# LaunchClaw Spec
 
-## What Is It
-A deployment toolkit for setting up OpenClaw on any machine (VPS, Mac Mini, mini PC). 
-Used by Bullpen team to commercialize OpenClaw setup as a service.
+## Goal
 
-One SSH session. One command. Client gets a fully configured AI agent.
+Commercial-grade deployment toolkit to install and standardize OpenClaw across VPS and on-prem machines (Mac Mini/mini PC) with a reproducible template workflow.
 
-## Core Flow
+## Core Command
 
-```
-launchclaw setup --profile business --channel discord --model anthropic/claude-sonnet-4-5
+```bash
+./setup.sh setup --profile business --channel discord --domain bot.example.com
 ```
 
-1. Detect OS (Ubuntu/Debian/macOS)
-2. Install dependencies (Node.js 22+, git, nginx if Linux)
-3. Install OpenClaw globally (`npm install -g openclaw@latest`)
-4. Create openclaw user (Linux) or use current user (macOS)
-5. Generate openclaw.json from profile + flags
-6. Set up systemd service (Linux) or launchd plist (macOS)
-7. Configure reverse proxy (nginx on Linux, skip on macOS)
-8. Set up SSL via certbot (if domain provided)
-9. Configure firewall (ufw on Linux)
-10. Start OpenClaw, verify it's running
-11. Print summary: URL, gateway token, next steps
+## Flow
 
-## Directory Structure
+1. Detect OS/arch
+2. Install dependencies (Node.js 22+, git, nginx/certbot/ufw on Linux as required)
+3. Install OpenClaw (`openclaw@<version>`)
+4. Prepare service user + config/workspace dirs
+5. Generate OpenClaw-compatible config
+6. Install daemon with `openclaw gateway install`
+7. Configure proxy/SSL/firewall (Linux)
+8. Verify gateway health and status
 
-```
-launchclaw/
-├── setup.sh                    # Main installer script (bash, works on Linux + macOS)
-├── lib/
-│   ├── detect.sh               # OS/arch detection
-│   ├── deps.sh                 # Dependency installation
-│   ├── install.sh              # OpenClaw installation
-│   ├── configure.sh            # Generate openclaw.json
-│   ├── service.sh              # systemd/launchd setup
-│   ├── proxy.sh                # nginx reverse proxy
-│   ├── ssl.sh                  # certbot SSL
-│   ├── firewall.sh             # ufw setup
-│   └── verify.sh               # Post-install verification
-├── profiles/
-│   ├── personal.json           # Single user, casual, all channels open
-│   ├── business.json           # Professional setup, specific channels
-│   ├── developer.json          # Dev-focused, GitHub integration, coding tools
-│   ├── agency.json             # Multi-agent, sub-agents enabled, high concurrency
-│   └── minimal.json            # Bare bones, just gateway + one channel
-├── souls/
-│   ├── assistant.md            # Generic helpful assistant
-│   ├── business.md             # Professional business assistant
-│   ├── developer.md            # Coding-focused agent
-│   └── custom-template.md      # Template for client customization
-├── skills/
-│   ├── README.md               # How to add skills
-│   └── bundles/
-│       ├── coding.txt          # List of coding skills to install
-│       ├── business.txt        # Business/productivity skills
-│       └── research.txt        # Research/analysis skills
-├── nginx/
-│   ├── openclaw.conf           # Main nginx config template
-│   └── ssl-params.conf         # SSL hardening params
-├── systemd/
-│   └── openclaw-gateway.service # systemd unit template
-├── launchd/
-│   └── com.openclaw.gateway.plist # macOS launchd plist
-├── cloud-init/
-│   └── template.yaml           # Cloud-init for VPS auto-provisioning
-├── README.md                   # Full documentation
-└── LICENSE                     # MIT
-```
+## Supported Platforms
 
-## CLI Flags
+- Ubuntu/Debian (systemd + nginx + certbot + ufw)
+- macOS (launchd via `openclaw gateway install`)
 
-```
-launchclaw setup [options]
+## Profiles
 
-Options:
-  --profile <name>      Profile: personal|business|developer|agency|minimal (default: personal)
-  --channel <name>      Primary channel: discord|telegram|whatsapp|slack|signal (can repeat)
-  --model <model>       Primary model (default: anthropic/claude-sonnet-4-5)
-  --domain <domain>     Domain for SSL (optional, skips SSL if not provided)
-  --soul <path>         Custom SOUL.md file path
-  --name <name>         Agent name (default: "Assistant")
-  --skip-proxy          Don't set up nginx
-  --skip-ssl            Don't set up certbot
-  --skip-firewall       Don't configure ufw
-  --dry-run             Show what would be done without doing it
-  --uninstall           Remove OpenClaw and all config
-```
+- `personal`: 2 concurrent, no subagents, 30m heartbeat
+- `business`: 4 concurrent, no subagents, 15m heartbeat, safeguard compaction
+- `developer`: 4 concurrent, 8 subagents, 15m heartbeat
+- `agency`: 4 concurrent, 8 subagents, Opus model, safeguard compaction
+- `minimal`: 2 concurrent, no subagents, heartbeat disabled
 
-## Profile Configs
+## Config Rules
 
-### personal.json
-- Single user, open DM policy
-- Heartbeat every 30m
-- 2 max concurrent agents
-- Model: claude-sonnet-4-5
+Generated config must remain valid against modern OpenClaw schema:
 
-### business.json  
-- Allowlist-based access
-- Heartbeat every 15m, business hours only
-- 4 max concurrent agents
-- Model: claude-sonnet-4-5
-- Compaction: safeguard mode
+- `gateway.mode = "local"`
+- `gateway.port = <gateway-port>`
+- `gateway.auth.mode = "token"`
+- `gateway.auth.token = <generated>`
+- `agents.defaults.model.primary = <model>`
+- `agents.defaults.maxConcurrent = <profile value>`
+- `agents.defaults.subagents.maxConcurrent = <profile value>` (only if > 0)
+- `channels` as object (not array)
 
-### developer.json
-- GitHub integration ready
-- Coding skills pre-configured
-- 4 max concurrent, 8 sub-agents
-- Model: claude-sonnet-4-5
-- Web tools enabled
+## CLI Surface
 
-### agency.json (Bullpen-style)
-- Multi-agent orchestration
-- 4 max concurrent, 8 sub-agents
-- Heartbeat every 15m
-- All channels configured
-- Model: claude-opus-4-6
-- Skills: coding, research, automation
+- `setup`
+- `status`
+- `--uninstall`
 
-### minimal.json
-- Just the gateway
-- 1 channel
-- 2 max concurrent
-- No heartbeat
-- Model: claude-sonnet-4-5
+Important options:
 
-## Cloud-Init Template
-For VPS auto-provisioning (Hetzner, DigitalOcean, etc.):
-- Based on ClawHost's cloud-init but simplified
-- Takes profile name as variable
-- Sets up swap, Node.js, OpenClaw, nginx, SSL, firewall
-- Injects generated openclaw.json
-- Starts service and verifies
+- `--profile`, `--channel`, `--model`, `--name`
+- `--gateway-port`
+- `--openclaw-version`
+- `--domain`, `--skip-proxy`, `--skip-ssl`, `--skip-firewall`
+- `--env-file` (templated rollouts)
+- `--yes` (non-interactive)
+- `--dry-run`
 
-## Key Design Decisions
-- Pure bash — no extra runtime dependencies
-- Works offline after initial download (just needs npm for OpenClaw install)
-- Idempotent — safe to run multiple times
-- Non-destructive — never overwrites existing config without asking
-- Clean uninstall option
-- Colorized output with progress indicators
-- Logs everything to /var/log/launchclaw.log (Linux) or ~/Library/Logs/launchclaw.log (macOS)
+## Cloud-Init
 
-## NOT in scope
-- Web dashboard (that's ClawHost's thing)
-- Billing/payments
-- Multi-tenant management
-- Automatic updates (client can run `launchclaw update` manually)
+`cloud-init/template.yaml` should provision:
+
+- Node.js + OpenClaw
+- OpenClaw config using current schema
+- nginx reverse proxy to gateway port `18789`
+- TLS via certbot (optional)
+- systemd service start + health verification
+
+## Out of Scope
+
+- Multi-tenant SaaS dashboard
+- Billing/subscriptions
+- Managed provider API integration (Hetzner/Cloudflare/Firebase/etc.)
+

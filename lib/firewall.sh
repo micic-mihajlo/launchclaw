@@ -32,8 +32,8 @@ setup_firewall() {
 
     # If no domain/proxy, expose the gateway port directly
     if [[ "$SKIP_PROXY" == true || -z "$DOMAIN" ]]; then
-        sudo ufw allow 3000/tcp
-        ok "Allowed port 3000 (direct gateway access)"
+        sudo ufw allow "${GATEWAY_PORT}/tcp"
+        ok "Allowed port ${GATEWAY_PORT} (direct gateway access)"
     fi
 
     # Enable UFW (non-interactive)

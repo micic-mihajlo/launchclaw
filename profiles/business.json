@@ -1,17 +1,10 @@
 {
   "name": "business",
-  "description": "Professional setup with allowlist-based access and business hours",
+  "description": "Professional setup with stricter defaults",
   "channels": ["slack", "discord"],
-  "maxConcurrentAgents": 4,
-  "maxSubAgents": 0,
   "model": "anthropic/claude-sonnet-4-5",
-  "heartbeatInterval": 15,
-  "heartbeatSchedule": "business_hours",
-  "compaction": "safeguard",
-  "accessPolicy": "allowlist",
-  "features": {
-    "webTools": false,
-    "githubIntegration": false,
-    "subAgents": false
-  }
+  "maxConcurrent": 4,
+  "subagentsMaxConcurrent": 0,
+  "heartbeatEvery": "15m",
+  "compactionMode": "safeguard"
 }

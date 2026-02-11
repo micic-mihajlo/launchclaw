@@ -3,7 +3,7 @@
 
 install_openclaw() {
     if [[ "$DRY_RUN" == true ]]; then
-        log "[DRY RUN] Would install openclaw@latest globally via npm"
+        log "[DRY RUN] Would install openclaw@${OPENCLAW_VERSION} globally via npm"
         return
     fi
 
@@ -14,8 +14,8 @@ install_openclaw() {
         log "OpenClaw already installed (${current_version}). Updating..."
     fi
 
-    log "Installing openclaw@latest..."
-    sudo npm install -g openclaw@latest
+    log "Installing openclaw@${OPENCLAW_VERSION}..."
+    sudo npm install -g "openclaw@${OPENCLAW_VERSION}"
     ok "OpenClaw $(openclaw --version 2>/dev/null || echo '') installed"
 }
 
@@ -31,22 +31,24 @@ setup_openclaw_user() {
     fi
 
     if [[ "$OS_TYPE" == "linux" ]]; then
-        # Create dedicated system user
+        # Create dedicated service user with a real home for user-level systemd service.
         if ! id openclaw &>/dev/null; then
-            sudo useradd --system --create-home --shell /bin/bash openclaw
+            sudo useradd --create-home --shell /bin/bash openclaw
             ok "Created openclaw user"
         else
             ok "openclaw user already exists"
         fi
 
         # Create config directory
-        sudo mkdir -p /home/openclaw/.openclaw
+        sudo mkdir -p /home/openclaw/.openclaw /home/openclaw/.openclaw/workspace
         sudo chown -R openclaw:openclaw /home/openclaw/.openclaw
         ok "Config directory: /home/openclaw/.openclaw/"
+        ok "Workspace directory: /home/openclaw/.openclaw/workspace/"
 
     elif [[ "$OS_TYPE" == "macos" ]]; then
         # Use current user on macOS
-        mkdir -p "${HOME}/.openclaw"
+        mkdir -p "${HOME}/.openclaw" "${HOME}/.openclaw/workspace"
         ok "Config directory: ${HOME}/.openclaw/"
+        ok "Workspace directory: ${HOME}/.openclaw/workspace/"
     fi
 }

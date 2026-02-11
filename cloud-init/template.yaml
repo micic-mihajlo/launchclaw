@@ -7,7 +7,7 @@
 #   __DOMAIN__         - Domain name for SSL (leave empty to skip)
 #   __MODEL__          - AI model identifier
 #   __AGENT_NAME__     - Agent display name
-#   __CHANNELS__       - Comma-separated channel list
+#   __CHANNEL_CONFIG__ - Raw channels object JSON (example: {"discord":{"enabled":true}})
 #   __ANTHROPIC_KEY__  - Anthropic API key
 #   __DISCORD_TOKEN__  - Discord bot token (if using discord channel)
 
@@ -54,28 +54,43 @@ write_files:
     owner: openclaw:openclaw
     content: |
       {
-        "agent": {
-          "name": "__AGENT_NAME__",
-          "model": "__MODEL__",
-          "maxConcurrentAgents": 4,
-          "maxSubAgents": 4,
-          "compaction": "default"
-        },
         "gateway": {
-          "port": 3000,
-          "host": "127.0.0.1",
-          "token": ""
+          "mode": "local",
+          "port": 18789,
+          "bind": "loopback",
+          "controlUi": {
+            "allowInsecureAuth": true
+          },
+          "auth": {
+            "mode": "token",
+            "token": ""
+          },
+          "trustedProxies": ["127.0.0.1", "::1"]
         },
-        "channels": [__CHANNELS__],
-        "heartbeat": {
-          "enabled": true,
-          "intervalMinutes": 15
+        "agents": {
+          "defaults": {
+            "workspace": "/home/openclaw/.openclaw/workspace",
+            "model": {
+              "primary": "__MODEL__"
+            },
+            "maxConcurrent": 4,
+            "subagents": {
+              "maxConcurrent": 4
+            },
+            "compaction": {
+              "mode": "default"
+            },
+            "heartbeat": {
+              "every": "15m"
+            }
+          }
         },
-        "keys": {
-          "anthropic": "__ANTHROPIC_KEY__"
-        },
-        "channelTokens": {
-          "discord": "__DISCORD_TOKEN__"
+        "channels": __CHANNEL_CONFIG__,
+        "env": {
+          "vars": {
+            "ANTHROPIC_API_KEY": "__ANTHROPIC_KEY__",
+            "DISCORD_BOT_TOKEN": "__DISCORD_TOKEN__"
+          }
         }
       }
 
@@ -84,7 +99,7 @@ write_files:
     permissions: '0644'
     content: |
       upstream openclaw_gateway {
-          server 127.0.0.1:3000;
+          server 127.0.0.1:18789;
           keepalive 64;
       }
       server {
@@ -133,7 +148,7 @@ write_files:
       WorkingDirectory=/home/openclaw
       Environment=NODE_ENV=production
       Environment=HOME=/home/openclaw
-      ExecStart=/usr/bin/openclaw gateway start
+      ExecStart=/usr/bin/openclaw gateway --port 18789 --bind loopback
       Restart=always
       RestartSec=5
       NoNewPrivileges=yes
@@ -187,7 +202,7 @@ runcmd:
   # Verify
   - sleep 5
   - systemctl status openclaw-gateway --no-pager || true
-  - curl -sf http://127.0.0.1:3000/health || echo "Gateway not yet responding — check logs with: journalctl -u openclaw-gateway"
+  - curl -sf http://127.0.0.1:18789/health || echo "Gateway not yet responding — check logs with: journalctl -u openclaw-gateway"
 
 final_message: |
   LaunchClaw provisioning complete!
