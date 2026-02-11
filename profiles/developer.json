@@ -1,0 +1,18 @@
+{
+  "name": "developer",
+  "description": "Dev-focused setup with GitHub integration and coding tools",
+  "channels": ["discord", "slack"],
+  "maxConcurrentAgents": 4,
+  "maxSubAgents": 8,
+  "model": "anthropic/claude-sonnet-4-5",
+  "heartbeatInterval": 15,
+  "heartbeatSchedule": "",
+  "compaction": "default",
+  "accessPolicy": "allowlist",
+  "features": {
+    "webTools": true,
+    "githubIntegration": true,
+    "subAgents": true
+  },
+  "skills": ["coding"]
+}

@@ -1,0 +1,198 @@
+#cloud-config
+# LaunchClaw Cloud-Init Template
+# For VPS auto-provisioning on Hetzner, DigitalOcean, Vultr, etc.
+#
+# Variables (replace before use):
+#   __PROFILE__        - LaunchClaw profile name (personal|business|developer|agency|minimal)
+#   __DOMAIN__         - Domain name for SSL (leave empty to skip)
+#   __MODEL__          - AI model identifier
+#   __AGENT_NAME__     - Agent display name
+#   __CHANNELS__       - Comma-separated channel list
+#   __ANTHROPIC_KEY__  - Anthropic API key
+#   __DISCORD_TOKEN__  - Discord bot token (if using discord channel)
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - git
+  - build-essential
+  - nginx
+  - certbot
+  - python3-certbot-nginx
+  - ufw
+
+# Set up swap (2GB)
+swap:
+  filename: /swapfile
+  size: 2G
+
+# Create openclaw user
+users:
+  - name: openclaw
+    shell: /bin/bash
+    groups: [sudo]
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+
+write_files:
+  # Firewall setup script
+  - path: /opt/launchclaw/setup-firewall.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      ufw default deny incoming
+      ufw default allow outgoing
+      ufw allow OpenSSH
+      ufw allow 80/tcp
+      ufw allow 443/tcp
+      echo "y" | ufw enable
+
+  # OpenClaw config
+  - path: /home/openclaw/.openclaw/openclaw.json
+    permissions: '0600'
+    owner: openclaw:openclaw
+    content: |
+      {
+        "agent": {
+          "name": "__AGENT_NAME__",
+          "model": "__MODEL__",
+          "maxConcurrentAgents": 4,
+          "maxSubAgents": 4,
+          "compaction": "default"
+        },
+        "gateway": {
+          "port": 3000,
+          "host": "127.0.0.1",
+          "token": ""
+        },
+        "channels": [__CHANNELS__],
+        "heartbeat": {
+          "enabled": true,
+          "intervalMinutes": 15
+        },
+        "keys": {
+          "anthropic": "__ANTHROPIC_KEY__"
+        },
+        "channelTokens": {
+          "discord": "__DISCORD_TOKEN__"
+        }
+      }
+
+  # Nginx config
+  - path: /etc/nginx/sites-available/openclaw
+    permissions: '0644'
+    content: |
+      upstream openclaw_gateway {
+          server 127.0.0.1:3000;
+          keepalive 64;
+      }
+      server {
+          listen 80;
+          listen [::]:80;
+          server_name __DOMAIN__;
+          add_header X-Frame-Options "SAMEORIGIN" always;
+          add_header X-Content-Type-Options "nosniff" always;
+          client_max_body_size 50m;
+          location / {
+              proxy_pass http://openclaw_gateway;
+              proxy_http_version 1.1;
+              proxy_set_header Upgrade $http_upgrade;
+              proxy_set_header Connection "upgrade";
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_connect_timeout 60s;
+              proxy_send_timeout 300s;
+              proxy_read_timeout 300s;
+              proxy_buffering off;
+          }
+          location /health {
+              proxy_pass http://openclaw_gateway/health;
+              access_log off;
+          }
+          location ~ /\. {
+              deny all;
+              return 404;
+          }
+      }
+
+  # Systemd service
+  - path: /etc/systemd/system/openclaw-gateway.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=OpenClaw AI Gateway
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      Type=simple
+      User=openclaw
+      Group=openclaw
+      WorkingDirectory=/home/openclaw
+      Environment=NODE_ENV=production
+      Environment=HOME=/home/openclaw
+      ExecStart=/usr/bin/openclaw gateway start
+      Restart=always
+      RestartSec=5
+      NoNewPrivileges=yes
+      ProtectSystem=strict
+      ProtectHome=read-only
+      ReadWritePaths=/home/openclaw/.openclaw
+      PrivateTmp=yes
+      LimitNOFILE=65536
+      MemoryMax=2G
+      StandardOutput=journal
+      StandardError=journal
+      SyslogIdentifier=openclaw-gateway
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # Install Node.js 22.x
+  - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  - apt-get install -y nodejs
+
+  # Install OpenClaw
+  - npm install -g openclaw@latest
+
+  # Generate gateway token
+  - |
+    TOKEN=$(openssl rand -hex 32)
+    sed -i "s/\"token\": \"\"/\"token\": \"${TOKEN}\"/" /home/openclaw/.openclaw/openclaw.json
+
+  # Set ownership
+  - chown -R openclaw:openclaw /home/openclaw/.openclaw
+
+  # Configure firewall
+  - /opt/launchclaw/setup-firewall.sh
+
+  # Enable nginx site
+  - ln -sf /etc/nginx/sites-available/openclaw /etc/nginx/sites-enabled/openclaw
+  - rm -f /etc/nginx/sites-enabled/default
+  - nginx -t && systemctl reload nginx
+
+  # SSL (if domain provided)
+  - |
+    if [ -n "__DOMAIN__" ] && [ "__DOMAIN__" != "_" ]; then
+      certbot --nginx -d __DOMAIN__ --non-interactive --agree-tos --redirect --register-unsafely-without-email --no-eff-email || true
+    fi
+
+  # Enable and start OpenClaw
+  - systemctl daemon-reload
+  - systemctl enable openclaw-gateway
+  - systemctl start openclaw-gateway
+
+  # Verify
+  - sleep 5
+  - systemctl status openclaw-gateway --no-pager || true
+  - curl -sf http://127.0.0.1:3000/health || echo "Gateway not yet responding — check logs with: journalctl -u openclaw-gateway"
+
+final_message: |
+  LaunchClaw provisioning complete!
+  Profile: __PROFILE__
+  Agent: __AGENT_NAME__
+  Model: __MODEL__
+  Check status: systemctl status openclaw-gateway
+  View logs: journalctl -u openclaw-gateway -f

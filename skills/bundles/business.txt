@@ -1,0 +1,13 @@
+# Business Skills Bundle
+# Install: while read -r skill; do openclaw skills install "$skill"; done < business.txt
+
+email-drafting
+meeting-notes
+report-generation
+calendar-management
+task-tracking
+client-communication
+document-review
+data-analysis
+presentation-builder
+invoice-processing

@@ -1,0 +1,13 @@
+# Coding Skills Bundle
+# Install: while read -r skill; do openclaw skills install "$skill"; done < coding.txt
+
+code-review
+code-generation
+git-workflow
+debugging
+refactoring
+testing
+documentation
+security-audit
+performance-analysis
+dependency-management

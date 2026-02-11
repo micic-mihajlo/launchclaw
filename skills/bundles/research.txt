@@ -1,0 +1,13 @@
+# Research Skills Bundle
+# Install: while read -r skill; do openclaw skills install "$skill"; done < research.txt
+
+web-search
+summarization
+fact-checking
+citation-management
+competitive-analysis
+market-research
+trend-analysis
+literature-review
+data-extraction
+report-compilation

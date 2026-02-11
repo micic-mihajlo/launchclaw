@@ -1,0 +1,17 @@
+{
+  "name": "minimal",
+  "description": "Bare bones — just the gateway and one channel",
+  "channels": ["discord"],
+  "maxConcurrentAgents": 2,
+  "maxSubAgents": 0,
+  "model": "anthropic/claude-sonnet-4-5",
+  "heartbeatInterval": 0,
+  "heartbeatSchedule": "",
+  "compaction": "default",
+  "accessPolicy": "open",
+  "features": {
+    "webTools": false,
+    "githubIntegration": false,
+    "subAgents": false
+  }
+}
