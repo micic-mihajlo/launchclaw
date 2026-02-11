@@ -1,34 +1,17 @@
 import crypto from "node:crypto";
 import http from "node:http";
-import { loadConfig } from "./lib/config.mjs";
 import { buildChannelConfig, normalizeChannels } from "./lib/channels.mjs";
+import { CloudflareClient } from "./lib/cloudflare.mjs";
+import { loadConfig } from "./lib/config.mjs";
 import { renderCloudInit } from "./lib/cloud-init.mjs";
-import { json, methodNotAllowed, notFound, parseBoolean, readJsonBody } from "./lib/http.mjs";
+import { json, methodNotAllowed, notFound, parseBoolean, parseJsonBuffer, readJsonBody, readRawBody } from "./lib/http.mjs";
 import { HetznerClient } from "./lib/hetzner.mjs";
+import { OrdersStore } from "./lib/orders-db.mjs";
 
 const config = loadConfig();
+const cloudflareClient = new CloudflareClient(config.cloudflare);
+const ordersStore = new OrdersStore(config.databasePath);
 let cachedHetznerClient = null;
-
-function getHetznerClient() {
-  if (cachedHetznerClient) {
-    return cachedHetznerClient;
-  }
-  cachedHetznerClient = new HetznerClient(config.hetznerApiToken);
-  return cachedHetznerClient;
-}
-
-function requireAuth(req) {
-  if (!config.launchclawApiToken) {
-    return;
-  }
-  const auth = req.headers.authorization || "";
-  const expected = `Bearer ${config.launchclawApiToken}`;
-  if (auth !== expected) {
-    const err = new Error("Unauthorized");
-    err.statusCode = 401;
-    throw err;
-  }
-}
 
 const INSTANCE_ACTIONS = {
   start: "poweron",
@@ -66,6 +49,34 @@ const PLAN_TEMPLATES = [
     description: "Multi-client template with higher CPU and memory budget.",
   },
 ];
+
+function getHetznerClient() {
+  if (cachedHetznerClient) {
+    return cachedHetznerClient;
+  }
+  cachedHetznerClient = new HetznerClient(config.hetznerApiToken);
+  return cachedHetznerClient;
+}
+
+function createHttpError(message, statusCode = 400, details = undefined) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  if (details !== undefined) {
+    err.details = details;
+  }
+  return err;
+}
+
+function requireAuth(req) {
+  if (!config.launchclawApiToken) {
+    return;
+  }
+  const auth = req.headers.authorization || "";
+  const expected = `Bearer ${config.launchclawApiToken}`;
+  if (auth !== expected) {
+    throw createHttpError("Unauthorized", 401);
+  }
+}
 
 function normalizeServerSummary(server) {
   return {
@@ -127,41 +138,70 @@ function pickMonthlyGrossPrice(serverType, locationName) {
   return parseMonthlyGross(prices[0]?.price_monthly?.gross);
 }
 
-async function handleCreateInstance(req, res) {
-  const body = await readJsonBody(req);
+function validateProvisionInput(input) {
+  const source = input && typeof input === "object" ? input : {};
 
-  const name = String(body.name || "").trim();
+  const name = String(source.name || "").trim();
   if (!name) {
-    return json(res, 400, { error: "name is required" });
+    throw createHttpError("name is required", 400);
   }
 
-  const channels = normalizeChannels(body.channels, config.defaults.channels);
+  const channels = normalizeChannels(source.channels, config.defaults.channels);
   const channelConfig = buildChannelConfig(channels);
 
-  const profile = String(body.profile || config.defaults.profile).trim();
-  const model = String(body.model || config.defaults.model).trim();
-  const agentName = String(body.agentName || config.defaults.agentName).trim();
-  const domain = String(body.domain || "").trim();
-  const gatewayPort = Number.parseInt(String(body.gatewayPort || config.defaults.gatewayPort), 10);
+  const profile = String(source.profile || config.defaults.profile).trim();
+  const model = String(source.model || config.defaults.model).trim();
+  const agentName = String(source.agentName || config.defaults.agentName).trim();
+  const domain = String(source.domain || "").trim().toLowerCase();
+  const gatewayPort = Number.parseInt(String(source.gatewayPort || config.defaults.gatewayPort), 10);
 
   if (!Number.isFinite(gatewayPort) || gatewayPort < 1 || gatewayPort > 65535) {
-    return json(res, 400, { error: "gatewayPort must be between 1 and 65535" });
+    throw createHttpError("gatewayPort must be between 1 and 65535", 400);
   }
 
-  const cloudInit = renderCloudInit({
+  const labels = source.labels && typeof source.labels === "object" ? source.labels : {};
+  const location = String(source.location || config.defaults.location || "").trim();
+  const datacenter = String(source.datacenter || "").trim();
+
+  return {
+    source,
+    name,
+    channels,
+    channelConfig,
     profile,
-    domain,
     model,
     agentName,
-    channelConfig,
-    anthropicKey: String(body.anthropicKey || "").trim(),
-    discordToken: String(body.discordToken || "").trim(),
-  }).replaceAll("\"port\": 18789", `\"port\": ${gatewayPort}`).replaceAll("127.0.0.1:18789", `127.0.0.1:${gatewayPort}`);
+    domain,
+    gatewayPort,
+    serverType: String(source.serverType || config.defaults.serverType).trim(),
+    image: String(source.image || config.defaults.image).trim(),
+    location,
+    datacenter,
+    labels,
+    sshKeys: normalizeSshKeys(source.sshKeys, config.defaults.sshKeys),
+    anthropicKey: String(source.anthropicKey || "").trim(),
+    discordToken: String(source.discordToken || "").trim(),
+    waitForAction: parseBoolean(source.waitForAction, true),
+  };
+}
+
+function buildCreateServerPayload(spec, extraLabels = {}) {
+  const cloudInit = renderCloudInit({
+    profile: spec.profile,
+    domain: spec.domain,
+    model: spec.model,
+    agentName: spec.agentName,
+    channelConfig: spec.channelConfig,
+    anthropicKey: spec.anthropicKey,
+    discordToken: spec.discordToken,
+  })
+    .replaceAll("\"port\": 18789", `\"port\": ${spec.gatewayPort}`)
+    .replaceAll("127.0.0.1:18789", `127.0.0.1:${spec.gatewayPort}`);
 
   const payload = {
-    name,
-    server_type: String(body.serverType || config.defaults.serverType).trim(),
-    image: String(body.image || config.defaults.image).trim(),
+    name: spec.name,
+    server_type: spec.serverType,
+    image: spec.image,
     user_data: cloudInit,
     start_after_create: true,
     public_net: {
@@ -171,32 +211,123 @@ async function handleCreateInstance(req, res) {
     labels: {
       "managed-by": "launchclaw-api",
       service: "openclaw",
-      profile,
-      ...(body.labels && typeof body.labels === "object" ? body.labels : {}),
+      profile: spec.profile,
+      ...spec.labels,
+      ...extraLabels,
     },
   };
 
-  const location = String(body.location || config.defaults.location || "").trim();
-  if (location) {
-    payload.location = location;
+  if (spec.location) {
+    payload.location = spec.location;
   }
 
-  const datacenter = String(body.datacenter || "").trim();
-  if (datacenter) {
-    payload.datacenter = datacenter;
+  if (spec.datacenter) {
+    payload.datacenter = spec.datacenter;
   }
 
-  const sshKeys = normalizeSshKeys(body.sshKeys, config.defaults.sshKeys);
-  if (sshKeys.length > 0) {
-    payload.ssh_keys = sshKeys;
+  if (spec.sshKeys.length > 0) {
+    payload.ssh_keys = spec.sshKeys;
   }
+
+  return {
+    payload,
+    cloudInit,
+  };
+}
+
+function normalizeDnsResult(base) {
+  return {
+    requested: base.requested,
+    configured: base.configured,
+    applied: base.applied,
+    domain: base.domain || null,
+    aRecordId: base.aRecordId || null,
+    aaaaRecordId: base.aaaaRecordId || null,
+    operations: base.operations || [],
+    reason: base.reason || null,
+  };
+}
+
+async function maybeApplyDns(domain, instance) {
+  const normalizedDomain = String(domain || "").trim().toLowerCase();
+  if (!normalizedDomain) {
+    return normalizeDnsResult({
+      requested: false,
+      configured: cloudflareClient.configured,
+      applied: false,
+      reason: "No domain requested",
+    });
+  }
+
+  if (!cloudflareClient.configured) {
+    return normalizeDnsResult({
+      requested: true,
+      configured: false,
+      applied: false,
+      domain: normalizedDomain,
+      reason: "Cloudflare not configured",
+    });
+  }
+
+  if (!instance?.ipv4) {
+    return normalizeDnsResult({
+      requested: true,
+      configured: true,
+      applied: false,
+      domain: normalizedDomain,
+      reason: "Instance has no IPv4 yet",
+    });
+  }
+
+  try {
+    const operations = [];
+    const a = await cloudflareClient.upsertDnsRecord({
+      type: "A",
+      name: normalizedDomain,
+      content: instance.ipv4,
+    });
+    operations.push({ type: "A", operation: a.operation, id: a.record?.id || null });
+
+    let aaaaRecordId = null;
+    if (cloudflareClient.createAAAA && instance.ipv6) {
+      const aaaa = await cloudflareClient.upsertDnsRecord({
+        type: "AAAA",
+        name: normalizedDomain,
+        content: instance.ipv6,
+      });
+      aaaaRecordId = aaaa.record?.id || null;
+      operations.push({ type: "AAAA", operation: aaaa.operation, id: aaaa.record?.id || null });
+    }
+
+    return normalizeDnsResult({
+      requested: true,
+      configured: true,
+      applied: true,
+      domain: normalizedDomain,
+      aRecordId: a.record?.id || null,
+      aaaaRecordId,
+      operations,
+    });
+  } catch (error) {
+    return normalizeDnsResult({
+      requested: true,
+      configured: true,
+      applied: false,
+      domain: normalizedDomain,
+      reason: error?.message || "Cloudflare DNS update failed",
+    });
+  }
+}
+
+async function provisionInstanceFromInput(input, options = {}) {
+  const spec = validateProvisionInput(input);
+  const { payload, cloudInit } = buildCreateServerPayload(spec, options.extraLabels || {});
 
   const createResult = await getHetznerClient().createServer(payload);
   const actionId = createResult.action?.id;
-  const waitForAction = parseBoolean(body.waitForAction, true);
 
   let action = createResult.action || null;
-  if (waitForAction && actionId) {
+  if (spec.waitForAction && actionId) {
     action = await getHetznerClient().waitForAction(actionId);
   }
 
@@ -206,18 +337,155 @@ async function handleCreateInstance(req, res) {
     serverData = latest.server || serverData;
   }
 
-  return json(res, 201, {
-    instance: normalizeServerSummary(serverData),
+  const instance = normalizeServerSummary(serverData);
+  const dns = await maybeApplyDns(spec.domain, instance);
+
+  return {
+    instance,
     action: normalizeAction(action),
+    dns,
     metadata: {
-      profile,
-      model,
-      agentName,
-      channels,
-      gatewayPort,
+      profile: spec.profile,
+      model: spec.model,
+      agentName: spec.agentName,
+      channels: spec.channels,
+      gatewayPort: spec.gatewayPort,
       cloudInitSha256: crypto.createHash("sha256").update(cloudInit).digest("hex"),
     },
-  });
+  };
+}
+
+function verifyWebhookSignature(rawBody, providedSignature, secret) {
+  if (!secret) {
+    return true;
+  }
+
+  const raw = String(providedSignature || "").trim();
+  if (!raw) {
+    return false;
+  }
+
+  const normalized = raw.startsWith("sha256=") ? raw.slice(7) : raw;
+  if (!/^[a-fA-F0-9]+$/.test(normalized)) {
+    return false;
+  }
+
+  const expectedHex = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  const expected = Buffer.from(expectedHex, "hex");
+  const provided = Buffer.from(normalized, "hex");
+  if (provided.length !== expected.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(expected, provided);
+}
+
+async function provisionOrder(orderId, options = {}) {
+  const trigger = options.trigger || "manual";
+  const force = Boolean(options.force);
+
+  let order = ordersStore.getOrder(orderId);
+  if (!order) {
+    throw createHttpError("Order not found", 404);
+  }
+
+  if (order.status === "running") {
+    return {
+      order,
+      skipped: true,
+      reason: "already_running",
+    };
+  }
+
+  if (order.status === "canceled") {
+    return {
+      order,
+      skipped: true,
+      reason: "canceled",
+    };
+  }
+
+  if (force && (order.status === "pending" || order.status === "failed")) {
+    order = ordersStore.markOrderPaid(order.id, {
+      payment: {
+        provider: "manual",
+        trigger,
+        forced: true,
+      },
+    });
+  }
+
+  if (order.status === "pending") {
+    throw createHttpError("Order is pending payment", 409);
+  }
+
+  if (order.status === "failed" && !force) {
+    throw createHttpError("Order failed previously; retry with force=true", 409);
+  }
+
+  if (order.status === "provisioning" && !force) {
+    return {
+      order,
+      skipped: true,
+      reason: "already_provisioning",
+    };
+  }
+
+  if (order.status === "paid" || force) {
+    const claimed = ordersStore.claimOrderProvisioning(order.id, { force });
+    if (!claimed) {
+      return {
+        order: ordersStore.getOrder(order.id),
+        skipped: true,
+        reason: "already_claimed",
+      };
+    }
+  }
+
+  order = ordersStore.getOrder(order.id);
+
+  try {
+    const result = await provisionInstanceFromInput(order.request, {
+      extraLabels: {
+        orderId: order.id,
+        ...(order.customer?.id ? { customerId: order.customer.id } : {}),
+      },
+    });
+
+    const updatedOrder = ordersStore.markOrderRunning(order.id, {
+      instance: result.instance,
+      providerActionId: result.action?.id || null,
+      dns: {
+        recordAId: result.dns?.aRecordId || null,
+        recordAAAAId: result.dns?.aaaaRecordId || null,
+      },
+      metadata: {
+        provisioning: {
+          trigger,
+          completedAt: new Date().toISOString(),
+          metadata: result.metadata,
+          dns: result.dns,
+        },
+      },
+    });
+
+    return {
+      order: updatedOrder,
+      skipped: false,
+      provision: result,
+    };
+  } catch (error) {
+    const failedOrder = ordersStore.markOrderFailed(order.id, error?.message || "Provisioning failed", error?.details);
+    const err = createHttpError(error?.message || "Provisioning failed", Number.isFinite(error?.statusCode) ? error.statusCode : 502, error?.details);
+    err.order = failedOrder;
+    throw err;
+  }
+}
+
+async function handleCreateInstance(req, res) {
+  const body = await readJsonBody(req);
+  const result = await provisionInstanceFromInput(body);
+  return json(res, 201, result);
 }
 
 async function handleListInstances(req, res, url) {
@@ -477,6 +745,264 @@ async function handleCatalogPlans(req, res, url) {
   });
 }
 
+function extractOrderIdentifiers(body) {
+  const source = body && typeof body === "object" ? body : {};
+  const data = source.data && typeof source.data === "object" ? source.data : {};
+  const metadata = data.metadata && typeof data.metadata === "object" ? data.metadata : {};
+
+  const orderId = String(source.orderId || data.orderId || metadata.orderId || "").trim();
+  const externalRef = String(source.externalRef || data.externalRef || metadata.externalRef || "").trim();
+
+  return {
+    orderId: orderId || null,
+    externalRef: externalRef || null,
+  };
+}
+
+function resolveOrderByIdentifiers(identifiers) {
+  if (identifiers.orderId) {
+    const direct = ordersStore.getOrder(identifiers.orderId);
+    if (direct) {
+      return direct;
+    }
+  }
+
+  if (identifiers.externalRef) {
+    return ordersStore.findOrderByExternalRef(identifiers.externalRef);
+  }
+
+  return null;
+}
+
+async function handleCreateOrder(req, res) {
+  const body = await readJsonBody(req);
+  const instanceRequest = body?.instance;
+
+  if (!instanceRequest || typeof instanceRequest !== "object") {
+    return json(res, 400, { error: "instance object is required" });
+  }
+
+  validateProvisionInput(instanceRequest);
+
+  const customer = body.customer && typeof body.customer === "object" ? body.customer : {};
+  let order = ordersStore.createOrder({
+    customer: {
+      name: String(customer.name || "").trim() || null,
+      email: String(customer.email || "").trim() || null,
+      id: String(customer.id || "").trim() || null,
+    },
+    externalRef: String(body.externalRef || "").trim() || null,
+    planId: String(body.planId || "").trim() || null,
+    notes: String(body.notes || "").trim() || null,
+    request: instanceRequest,
+    metadata: {
+      source: "api",
+    },
+  });
+
+  const shouldMarkPaid = parseBoolean(body.markPaid, false);
+  const shouldProvision = parseBoolean(body.provisionNow, config.autoProvisionPaidOrders);
+  let provisioning = null;
+
+  if (shouldMarkPaid) {
+    order = ordersStore.markOrderPaid(order.id, {
+      externalRef: String(body.externalRef || "").trim() || null,
+      payment: {
+        provider: String(body.paymentProvider || "manual").trim() || "manual",
+        eventType: "manual.mark_paid",
+      },
+    });
+
+    if (shouldProvision) {
+      try {
+        provisioning = await provisionOrder(order.id, { trigger: "manual_create", force: false });
+        order = provisioning.order;
+      } catch (error) {
+        provisioning = {
+          error: error.message,
+          details: error.details || undefined,
+          order: error.order || ordersStore.getOrder(order.id),
+        };
+        order = provisioning.order;
+      }
+    }
+  }
+
+  return json(res, 201, {
+    order,
+    provisioning,
+    next: {
+      markPaidEndpoint: `/v1/orders/${order.id}/mark-paid`,
+      provisionEndpoint: `/v1/orders/${order.id}/provision`,
+    },
+  });
+}
+
+async function handleListOrders(req, res, url) {
+  const status = String(url.searchParams.get("status") || "").trim();
+  const limit = Number.parseInt(String(url.searchParams.get("limit") || "50"), 10);
+  const orders = ordersStore.listOrders({ status: status || null, limit });
+  return json(res, 200, { orders });
+}
+
+async function handleGetOrder(req, res, orderId, url) {
+  const order = ordersStore.getOrder(orderId);
+  if (!order) {
+    return json(res, 404, { error: "Order not found" });
+  }
+
+  const includeEvents = parseBoolean(url.searchParams.get("events"), true);
+  return json(res, 200, {
+    order,
+    events: includeEvents ? ordersStore.listOrderEvents(orderId, Number.parseInt(String(url.searchParams.get("limit") || "100"), 10)) : undefined,
+  });
+}
+
+async function handleMarkOrderPaid(req, res, orderId, url) {
+  const body = await readJsonBody(req);
+  const order = ordersStore.markOrderPaid(orderId, {
+    externalRef: String(body.externalRef || "").trim() || null,
+    payment: {
+      provider: String(body.provider || "manual").trim() || "manual",
+      eventType: String(body.eventType || "manual.mark_paid").trim() || "manual.mark_paid",
+      eventId: String(body.eventId || "").trim() || null,
+      amount: body.amount ?? null,
+      currency: String(body.currency || "").trim() || null,
+    },
+  });
+
+  if (!order) {
+    return json(res, 404, { error: "Order not found" });
+  }
+
+  const shouldProvision = parseBoolean(url.searchParams.get("provision"), config.autoProvisionPaidOrders);
+  if (!shouldProvision) {
+    return json(res, 200, { order, provisioning: null });
+  }
+
+  try {
+    const provisioning = await provisionOrder(orderId, { trigger: "manual_mark_paid" });
+    return json(res, 200, { order: provisioning.order, provisioning });
+  } catch (error) {
+    return json(res, Number.isFinite(error?.statusCode) ? error.statusCode : 502, {
+      error: error.message,
+      details: error.details || undefined,
+      order: error.order || ordersStore.getOrder(orderId),
+    });
+  }
+}
+
+async function handleProvisionOrder(req, res, orderId, url) {
+  const force = parseBoolean(url.searchParams.get("force"), false);
+  try {
+    const provisioning = await provisionOrder(orderId, { trigger: "manual_provision", force });
+    return json(res, 200, {
+      order: provisioning.order,
+      provisioning,
+    });
+  } catch (error) {
+    return json(res, Number.isFinite(error?.statusCode) ? error.statusCode : 502, {
+      error: error.message,
+      details: error.details || undefined,
+      order: error.order || ordersStore.getOrder(orderId),
+    });
+  }
+}
+
+async function handleCancelOrder(req, res, orderId) {
+  const body = await readJsonBody(req);
+  const reason = String(body.reason || "").trim();
+  const order = ordersStore.markOrderCanceled(orderId, reason);
+  if (!order) {
+    return json(res, 404, { error: "Order not found" });
+  }
+  return json(res, 200, { order });
+}
+
+async function handleOrdersWebhook(req, res) {
+  const rawBody = await readRawBody(req);
+  const signature = req.headers["x-launchclaw-signature"] || req.headers["x-webhook-signature"] || "";
+
+  if (config.orderWebhookSecret && !verifyWebhookSignature(rawBody, signature, config.orderWebhookSecret)) {
+    return json(res, 401, { error: "Invalid webhook signature" });
+  }
+
+  const body = parseJsonBuffer(rawBody);
+  const type = String(body.type || body.event || "").trim().toLowerCase();
+  if (!type) {
+    return json(res, 400, { error: "Webhook type is required" });
+  }
+
+  const identifiers = extractOrderIdentifiers(body);
+  const order = resolveOrderByIdentifiers(identifiers);
+
+  if (!order) {
+    return json(res, 202, {
+      accepted: true,
+      ignored: true,
+      reason: "order_not_found",
+      type,
+      identifiers,
+    });
+  }
+
+  if (["order.paid", "payment.succeeded", "subscription.active"].includes(type)) {
+    const paidOrder = ordersStore.markOrderPaid(order.id, {
+      externalRef: identifiers.externalRef,
+      payment: {
+        provider: String(body.provider || body.data?.provider || "webhook").trim() || "webhook",
+        eventType: type,
+        eventId: String(body.eventId || body.data?.eventId || "").trim() || null,
+      },
+    });
+
+    const shouldProvision = parseBoolean(body.provision, config.autoProvisionPaidOrders);
+    if (!shouldProvision) {
+      return json(res, 200, {
+        accepted: true,
+        type,
+        order: paidOrder,
+        provisioning: null,
+      });
+    }
+
+    try {
+      const provisioning = await provisionOrder(order.id, { trigger: "webhook" });
+      return json(res, 200, {
+        accepted: true,
+        type,
+        order: provisioning.order,
+        provisioning,
+      });
+    } catch (error) {
+      return json(res, Number.isFinite(error?.statusCode) ? error.statusCode : 502, {
+        accepted: true,
+        type,
+        error: error.message,
+        details: error.details || undefined,
+        order: error.order || ordersStore.getOrder(order.id),
+      });
+    }
+  }
+
+  if (["order.canceled", "payment.failed", "subscription.canceled"].includes(type)) {
+    const canceled = ordersStore.markOrderCanceled(order.id, String(body.reason || body.data?.reason || type));
+    return json(res, 200, {
+      accepted: true,
+      type,
+      order: canceled,
+    });
+  }
+
+  return json(res, 200, {
+    accepted: true,
+    ignored: true,
+    reason: "unhandled_event_type",
+    type,
+    order,
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -486,7 +1012,19 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/healthz") {
-      return json(res, 200, { ok: true, service: "launchclaw-api" });
+      return json(res, 200, {
+        ok: true,
+        service: "launchclaw-api",
+        cloudflareConfigured: cloudflareClient.configured,
+        autoProvisionPaidOrders: config.autoProvisionPaidOrders,
+      });
+    }
+
+    if (url.pathname === "/v1/webhooks/orders") {
+      if (req.method === "POST") {
+        return await handleOrdersWebhook(req, res);
+      }
+      return methodNotAllowed(res);
     }
 
     requireAuth(req);
@@ -497,6 +1035,16 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === "GET") {
         return await handleListInstances(req, res, url);
+      }
+      return methodNotAllowed(res);
+    }
+
+    if (url.pathname === "/v1/orders") {
+      if (req.method === "POST") {
+        return await handleCreateOrder(req, res);
+      }
+      if (req.method === "GET") {
+        return await handleListOrders(req, res, url);
       }
       return methodNotAllowed(res);
     }
@@ -521,24 +1069,60 @@ const server = http.createServer(async (req, res) => {
       return await handleCatalogPlans(req, res, url);
     }
 
-    const actionMatch = url.pathname.match(/^\/v1\/instances\/(\d+)\/actions\/([a-z-]+)$/);
-    if (actionMatch) {
-      const id = actionMatch[1];
-      const action = actionMatch[2];
+    const instanceActionMatch = url.pathname.match(/^\/v1\/instances\/(\d+)\/actions\/([a-z-]+)$/);
+    if (instanceActionMatch) {
+      const id = instanceActionMatch[1];
+      const action = instanceActionMatch[2];
       if (req.method === "POST") {
         return await handleInstanceAction(req, res, id, action, url);
       }
       return methodNotAllowed(res);
     }
 
-    const match = url.pathname.match(/^\/v1\/instances\/(\d+)$/);
-    if (match) {
-      const id = match[1];
+    const orderMarkPaidMatch = url.pathname.match(/^\/v1\/orders\/([^/]+)\/mark-paid$/);
+    if (orderMarkPaidMatch) {
+      const orderId = orderMarkPaidMatch[1];
+      if (req.method === "POST") {
+        return await handleMarkOrderPaid(req, res, orderId, url);
+      }
+      return methodNotAllowed(res);
+    }
+
+    const orderProvisionMatch = url.pathname.match(/^\/v1\/orders\/([^/]+)\/provision$/);
+    if (orderProvisionMatch) {
+      const orderId = orderProvisionMatch[1];
+      if (req.method === "POST") {
+        return await handleProvisionOrder(req, res, orderId, url);
+      }
+      return methodNotAllowed(res);
+    }
+
+    const orderCancelMatch = url.pathname.match(/^\/v1\/orders\/([^/]+)\/cancel$/);
+    if (orderCancelMatch) {
+      const orderId = orderCancelMatch[1];
+      if (req.method === "POST") {
+        return await handleCancelOrder(req, res, orderId);
+      }
+      return methodNotAllowed(res);
+    }
+
+    const instanceMatch = url.pathname.match(/^\/v1\/instances\/(\d+)$/);
+    if (instanceMatch) {
+      const id = instanceMatch[1];
       if (req.method === "GET") {
         return await handleGetInstance(req, res, id);
       }
       if (req.method === "DELETE") {
         return await handleDeleteInstance(req, res, id, url);
+      }
+      return methodNotAllowed(res);
+    }
+
+    const orderMatch = url.pathname.match(/^\/v1\/orders\/([^/]+)$/);
+    if (orderMatch) {
+      const orderId = orderMatch[1];
+      if (req.method === "GET") {
+        return await handleGetOrder(req, res, orderId, url);
       }
       return methodNotAllowed(res);
     }

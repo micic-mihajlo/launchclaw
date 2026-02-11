@@ -1,12 +1,12 @@
 const MAX_BODY_BYTES = 1024 * 1024;
 
-export async function readJsonBody(req) {
+export async function readRawBody(req, maxBytes = MAX_BODY_BYTES) {
   const chunks = [];
   let size = 0;
 
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) {
+    if (size > maxBytes) {
       const err = new Error("Payload too large");
       err.statusCode = 413;
       throw err;
@@ -14,7 +14,11 @@ export async function readJsonBody(req) {
     chunks.push(chunk);
   }
 
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  return Buffer.concat(chunks);
+}
+
+export function parseJsonBuffer(rawBuffer) {
+  const raw = rawBuffer.toString("utf8").trim();
   if (!raw) {
     return {};
   }
@@ -26,6 +30,11 @@ export async function readJsonBody(req) {
     err.statusCode = 400;
     throw err;
   }
+}
+
+export async function readJsonBody(req) {
+  const raw = await readRawBody(req);
+  return parseJsonBuffer(raw);
 }
 
 export function json(res, statusCode, payload) {

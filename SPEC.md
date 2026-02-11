@@ -77,11 +77,11 @@ Important options:
 
 - Multi-tenant SaaS dashboard
 - Billing/subscriptions
-- Full control-plane stack (Cloudflare DNS, auth, webhooks, payment-provider entitlements)
+- Full end-to-end SaaS control-plane (customer auth UI, billing entitlements, seat/team management)
 
 ## Optional API Scaffold
 
-`/Users/mihajlomicic/Documents/GitHub/launchclaw/api` now contains a minimal stateless provisioning API for Hetzner:
+`/Users/mihajlomicic/Documents/GitHub/launchclaw/api` now contains a lightweight provisioning control-plane for Hetzner:
 
 - `GET /v1/catalog/locations`
 - `GET /v1/catalog/server-types`
@@ -92,3 +92,10 @@ Important options:
 - `GET /v1/instances/:id`
 - `POST /v1/instances/:id/actions/:action`
 - `DELETE /v1/instances/:id`
+- `POST /v1/orders`
+- `GET /v1/orders`
+- `GET /v1/orders/:id`
+- `POST /v1/orders/:id/mark-paid`
+- `POST /v1/orders/:id/provision`
+- `POST /v1/orders/:id/cancel`
+- `POST /v1/webhooks/orders`

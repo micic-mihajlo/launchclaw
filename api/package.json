@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.mjs",
     "dev": "node --watch src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/lib/config.mjs && node --check src/lib/http.mjs && node --check src/lib/hetzner.mjs && node --check src/lib/cloud-init.mjs && node --check src/lib/channels.mjs"
+    "check": "node --check src/server.mjs && node --check src/lib/config.mjs && node --check src/lib/http.mjs && node --check src/lib/hetzner.mjs && node --check src/lib/cloud-init.mjs && node --check src/lib/channels.mjs && node --check src/lib/cloudflare.mjs && node --check src/lib/orders-db.mjs"
   },
   "engines": {
     "node": ">=22"
