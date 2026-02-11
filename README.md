@@ -149,7 +149,10 @@ It supports:
 - checking server-type availability by location/datacenter
 - exposing templated plans with live pricing hints
 - creating OpenClaw instances with injected LaunchClaw cloud-init
+- optional Cloudflare DNS automation for instance domains
 - instance status, lifecycle actions (start/stop/restart), and deletion
+- pending-order workflow (`pending -> paid -> provisioning -> running/failed`) via SQLite
+- webhook-driven provisioning (`/v1/webhooks/orders`)
 
 See `/Users/mihajlomicic/Documents/GitHub/launchclaw/api/README.md`.
 
