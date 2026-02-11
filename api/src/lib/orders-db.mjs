@@ -383,9 +383,12 @@ export class OrdersStore {
     const statement = this.db.prepare(`
       UPDATE orders
       SET status = 'failed', updated_at = ?, error_message = ?
-      WHERE id = ?
+      WHERE id = ? AND status NOT IN ('running', 'canceled')
     `);
-    statement.run(nowIso(), message, orderId);
+    const result = statement.run(nowIso(), message, orderId);
+    if (result.changes === 0) {
+      return this.getOrder(orderId);
+    }
     this.#appendEvent(orderId, options.eventType || "order.provisioning.failed", {
       message,
       details,
