@@ -238,6 +238,11 @@ export class OrdersStore {
     if (existing.status === "canceled") {
       return existing;
     }
+    const allowFailedTransition = Boolean(options.allowFailedTransition);
+    const allowedStatuses = allowFailedTransition ? new Set(["pending", "paid", "failed"]) : new Set(["pending", "paid"]);
+    if (!allowedStatuses.has(existing.status)) {
+      return existing;
+    }
 
     const paidAt = existing.paidAt || nowIso();
     const updatedAt = nowIso();
@@ -252,20 +257,35 @@ export class OrdersStore {
     const statement = this.db.prepare(`
       UPDATE orders
       SET
-        status = CASE WHEN status = 'pending' THEN 'paid' ELSE status END,
+        status = CASE
+          WHEN status = 'pending' THEN 'paid'
+          WHEN status = 'failed' AND ? = 1 THEN 'paid'
+          ELSE status
+        END,
         updated_at = ?,
         paid_at = COALESCE(paid_at, ?),
         external_ref = COALESCE(external_ref, ?),
         metadata_json = ?,
-        error_message = NULL
-      WHERE id = ?
+        error_message = CASE WHEN status = 'failed' THEN NULL ELSE error_message END
+      WHERE id = ? AND status IN (${allowFailedTransition ? "'pending','paid','failed'" : "'pending','paid'"})
     `);
-    statement.run(updatedAt, paidAt, options.externalRef || null, JSON.stringify(mergedMetadata), orderId);
-    this.#appendEvent(orderId, "order.paid", {
-      externalRef: options.externalRef || null,
-      payment: options.payment || null,
-    });
-    return this.getOrder(orderId);
+    const result = statement.run(
+      allowFailedTransition ? 1 : 0,
+      updatedAt,
+      paidAt,
+      options.externalRef || null,
+      JSON.stringify(mergedMetadata),
+      orderId
+    );
+
+    const updated = this.getOrder(orderId);
+    if (result.changes > 0 && existing.status !== "paid" && updated?.status === "paid") {
+      this.#appendEvent(orderId, "order.paid", {
+        externalRef: options.externalRef || null,
+        payment: options.payment || null,
+      });
+    }
+    return updated;
   }
 
   claimOrderProvisioning(orderId, options = {}) {
@@ -351,7 +371,7 @@ export class OrdersStore {
     return this.getOrder(orderId);
   }
 
-  markOrderFailed(orderId, error, details = null) {
+  markOrderFailed(orderId, error, details = null, options = {}) {
     const existing = this.getOrder(orderId);
     if (!existing) {
       return null;
@@ -366,7 +386,7 @@ export class OrdersStore {
       WHERE id = ?
     `);
     statement.run(nowIso(), message, orderId);
-    this.#appendEvent(orderId, "order.provisioning.failed", {
+    this.#appendEvent(orderId, options.eventType || "order.provisioning.failed", {
       message,
       details,
     });
@@ -378,13 +398,19 @@ export class OrdersStore {
     if (!existing) {
       return null;
     }
+    if (existing.status === "running" || existing.status === "canceled") {
+      return existing;
+    }
     const statement = this.db.prepare(`
       UPDATE orders
       SET status = 'canceled', updated_at = ?, canceled_at = ?, error_message = ?
-      WHERE id = ?
+      WHERE id = ? AND status != 'running'
     `);
     const canceledAt = nowIso();
-    statement.run(canceledAt, canceledAt, reason || null, orderId);
+    const result = statement.run(canceledAt, canceledAt, reason || null, orderId);
+    if (result.changes === 0) {
+      return this.getOrder(orderId);
+    }
     this.#appendEvent(orderId, "order.canceled", {
       reason: reason || null,
     });

@@ -406,13 +406,15 @@ async function provisionOrder(orderId, options = {}) {
   }
 
   if (force && (order.status === "pending" || order.status === "failed")) {
-    order = ordersStore.markOrderPaid(order.id, {
-      payment: {
-        provider: "manual",
-        trigger,
-        forced: true,
-      },
-    });
+    if (order.status === "pending") {
+      order = ordersStore.markOrderPaid(order.id, {
+        payment: {
+          provider: "manual",
+          trigger,
+          forced: true,
+        },
+      });
+    }
   }
 
   if (order.status === "pending") {
@@ -862,6 +864,7 @@ async function handleMarkOrderPaid(req, res, orderId, url) {
   const body = await readJsonBody(req);
   const order = ordersStore.markOrderPaid(orderId, {
     externalRef: String(body.externalRef || "").trim() || null,
+    allowFailedTransition: true,
     payment: {
       provider: String(body.provider || "manual").trim() || "manual",
       eventType: String(body.eventType || "manual.mark_paid").trim() || "manual.mark_paid",
@@ -949,6 +952,7 @@ async function handleOrdersWebhook(req, res) {
   if (["order.paid", "payment.succeeded", "subscription.active"].includes(type)) {
     const paidOrder = ordersStore.markOrderPaid(order.id, {
       externalRef: identifiers.externalRef,
+      allowFailedTransition: true,
       payment: {
         provider: String(body.provider || body.data?.provider || "webhook").trim() || "webhook",
         eventType: type,
@@ -985,12 +989,26 @@ async function handleOrdersWebhook(req, res) {
     }
   }
 
-  if (["order.canceled", "payment.failed", "subscription.canceled"].includes(type)) {
+  if (["order.canceled", "subscription.canceled"].includes(type)) {
     const canceled = ordersStore.markOrderCanceled(order.id, String(body.reason || body.data?.reason || type));
     return json(res, 200, {
       accepted: true,
       type,
       order: canceled,
+    });
+  }
+
+  if (type === "payment.failed") {
+    const failed = ordersStore.markOrderFailed(
+      order.id,
+      String(body.reason || body.data?.reason || "Payment failed"),
+      body.data || null,
+      { eventType: "order.payment.failed" }
+    );
+    return json(res, 200, {
+      accepted: true,
+      type,
+      order: failed,
     });
   }
 
