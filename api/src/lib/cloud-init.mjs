@@ -26,6 +26,7 @@ export function renderCloudInit(params) {
     __MODEL__: escapeForTemplate(params.model),
     __AGENT_NAME__: escapeForTemplate(params.agentName),
     __ANTHROPIC_KEY__: escapeForTemplate(params.anthropicKey || ""),
+    __MINIMAX_KEY__: escapeForTemplate(params.minimaxKey || ""),
     __DISCORD_TOKEN__: escapeForTemplate(params.discordToken || ""),
   };
 
