@@ -3,7 +3,11 @@ const SUPPORTED = new Set(["discord", "telegram", "whatsapp", "slack", "signal"]
 function channelEntry(name) {
   switch (name) {
     case "discord":
-      return { enabled: true, dm: { enabled: true, policy: "pairing" } };
+      // Default OpenClaw behavior is typically "allowlist" for guilds; if we
+      // don't specify this, a newly provisioned bot often appears "silent" in
+      // servers until explicitly allowlisted. "open" makes first-run testing
+      // and onboarding work out of the box.
+      return { enabled: true, groupPolicy: "open", dm: { enabled: true, policy: "pairing" } };
     case "telegram":
       return { enabled: true, dmPolicy: "pairing" };
     case "whatsapp":
