@@ -180,6 +180,7 @@ function validateProvisionInput(input) {
     labels,
     sshKeys: normalizeSshKeys(source.sshKeys, config.defaults.sshKeys),
     anthropicKey: String(source.anthropicKey || "").trim(),
+    minimaxKey: String(source.minimaxKey || "").trim(),
     discordToken: String(source.discordToken || "").trim(),
     waitForAction: parseBoolean(source.waitForAction, true),
   };
@@ -193,6 +194,7 @@ function buildCreateServerPayload(spec, extraLabels = {}) {
     agentName: spec.agentName,
     channelConfig: spec.channelConfig,
     anthropicKey: spec.anthropicKey,
+    minimaxKey: spec.minimaxKey,
     discordToken: spec.discordToken,
   })
     .replaceAll("\"port\": 18789", `\"port\": ${spec.gatewayPort}`)

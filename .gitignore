@@ -1,1 +1,3 @@
 /data/
+/.env
+/api/.env
